@@ -3,7 +3,7 @@ const axios = require('axios');
 const crypto = require('crypto');
 const router = express.Router();
 
-// Environment variables validation for CUSTOM APP
+// Environment variables validation
 const requiredVars = ['SHOPIFY_STORE_URL', 'SHOPIFY_ACCESS_TOKEN', 'APP_URL'];
 const missing = requiredVars.filter(v => !process.env[v]);
 if (missing.length > 0) {
@@ -22,9 +22,20 @@ const verifyWebhookSignature = (body, signature) => {
     return true; // Allow webhooks without verification for development
   }
   
+  // Ensure body is a string or buffer
+  let bodyString;
+  if (Buffer.isBuffer(body)) {
+    bodyString = body.toString('utf8');
+  } else if (typeof body === 'string') {
+    bodyString = body;
+  } else {
+    // If body is an object, convert to string
+    bodyString = JSON.stringify(body);
+  }
+  
   const hmac = crypto
     .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
-    .update(body, 'utf8')
+    .update(bodyString, 'utf8')
     .digest('base64');
     
   return crypto.timingSafeEqual(
@@ -106,6 +117,13 @@ router.post('/setup-webhooks', async (req, res) => {
     }
   ];
   
+  // Add webhook secret if configured
+  if (SHOPIFY_WEBHOOK_SECRET) {
+    webhooks.forEach(webhook => {
+      webhook.api_client_id = SHOPIFY_WEBHOOK_SECRET;
+    });
+  }
+  
   const results = [];
   
   for (const webhook of webhooks) {
@@ -160,7 +178,7 @@ router.get('/webhooks', async (req, res) => {
 
 // 4. Webhook Routes
 // Order Created Webhook
-router.post('/webhooks/orders/create', express.raw({ type: 'application/json' }), (req, res) => {
+router.post('/webhooks/orders/create', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.get('X-Shopify-Hmac-Sha256');
   const shop = req.get('X-Shopify-Shop-Domain');
   
@@ -171,12 +189,23 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
   
   try {
     const order = JSON.parse(req.body);
-    console.log(`[SHOPIFY] New order received: #${order.order_number} - $${order.total_price}`);
+    console.log(`[SHOPIFY] New order received: #${order.order_number} - ${order.total_price}`);
     console.log(`[SHOPIFY] Customer: ${order.customer?.email || 'Guest'}`);
     console.log(`[SHOPIFY] Items: ${order.line_items?.length || 0}`);
     
     // Phase 4: Calculate and award points
-    console.log(`[SHOPIFY] TODO: Calculate points for order ${order.id}`);
+    try {
+      const PointsService = require('../services/pointsService');
+      const result = await PointsService.processOrder(order);
+      
+      if (result) {
+        console.log(`[SHOPIFY] Points awarded: ${result.points_awarded} to customer ${result.customer_id}`);
+        console.log(`[SHOPIFY] New balance: ${result.new_balance} points, tier: ${result.new_tier}`);
+      }
+    } catch (pointsError) {
+      console.error('[SHOPIFY] Error processing points for order:', pointsError.message);
+      // Don't fail the webhook if points processing fails
+    }
     
     res.status(200).send('OK');
   } catch (error) {
@@ -186,7 +215,7 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
 });
 
 // Order Updated Webhook
-router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }), (req, res) => {
+router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.get('X-Shopify-Hmac-Sha256');
   const shop = req.get('X-Shopify-Shop-Domain');
   
@@ -196,11 +225,23 @@ router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }
   }
   
   try {
-    const order = JSON.parse(req.body);
+    // Parse the raw body
+    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
+    const order = JSON.parse(bodyString);
+    
     console.log(`[SHOPIFY] Order updated: #${order.order_number} - Status: ${order.financial_status}`);
     
-    // Phase 4: Handle order updates (payments, refunds)
-    console.log(`[SHOPIFY] TODO: Handle order update for ${order.id}`);
+    // Phase 4: Handle order updates (payments, refunds) - only if DB connected
+    try {
+      const mongoose = require('mongoose');
+      if (mongoose.connection.readyState === 1) {
+        console.log(`[SHOPIFY] TODO: Handle order update for ${order.id} (DB connected)`);
+      } else {
+        console.log('[SHOPIFY] Skipping order update processing - database not connected');
+      }
+    } catch (updateError) {
+      console.error('[SHOPIFY] Error processing order update:', updateError.message);
+    }
     
     res.status(200).send('OK');
   } catch (error) {
@@ -210,7 +251,7 @@ router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }
 });
 
 // Order Cancelled Webhook
-router.post('/webhooks/orders/cancelled', express.raw({ type: 'application/json' }), (req, res) => {
+router.post('/webhooks/orders/cancelled', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.get('X-Shopify-Hmac-Sha256');
   const shop = req.get('X-Shopify-Shop-Domain');
   
@@ -220,11 +261,23 @@ router.post('/webhooks/orders/cancelled', express.raw({ type: 'application/json'
   }
   
   try {
-    const order = JSON.parse(req.body);
+    // Parse the raw body
+    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
+    const order = JSON.parse(bodyString);
+    
     console.log(`[SHOPIFY] Order cancelled: #${order.order_number}`);
     
-    // Phase 4: Handle point deduction for cancelled orders
-    console.log(`[SHOPIFY] TODO: Handle cancelled order ${order.id}`);
+    // Phase 4: Handle point deduction for cancelled orders - only if DB connected
+    try {
+      const mongoose = require('mongoose');
+      if (mongoose.connection.readyState === 1) {
+        console.log(`[SHOPIFY] TODO: Handle cancelled order ${order.id} (DB connected)`);
+      } else {
+        console.log('[SHOPIFY] Skipping cancellation processing - database not connected');
+      }
+    } catch (cancelError) {
+      console.error('[SHOPIFY] Error processing order cancellation:', cancelError.message);
+    }
     
     res.status(200).send('OK');
   } catch (error) {

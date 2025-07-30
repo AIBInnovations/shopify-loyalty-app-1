@@ -3,8 +3,50 @@ const router = express.Router();
 const PointsService = require('../services/pointsService');
 const { CustomerPoints, PointsTransaction, StoreConfig } = require('../models');
 
+// Middleware to check database connection
+const requireDatabase = (req, res, next) => {
+  const mongoose = require('mongoose');
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not available',
+      message: 'MongoDB connection is not established. Please check your MONGODB_URI environment variable.',
+      database_status: {
+        0: 'disconnected',
+        1: 'connected',
+        2: 'connecting',
+        3: 'disconnecting'
+      }[mongoose.connection.readyState] || 'unknown'
+    });
+  }
+  next();
+};
+
+// 0. Points system status (works without database)
+router.get('/status', async (req, res) => {
+  const mongoose = require('mongoose');
+  const dbConnected = mongoose.connection.readyState === 1;
+  
+  res.json({
+    success: true,
+    points_system: {
+      available: dbConnected,
+      database_status: {
+        0: 'disconnected',
+        1: 'connected', 
+        2: 'connecting',
+        3: 'disconnecting'
+      }[mongoose.connection.readyState] || 'unknown',
+      mongodb_configured: !!process.env.MONGODB_URI
+    },
+    message: dbConnected 
+      ? 'Points system is fully operational' 
+      : 'Points system requires MongoDB connection'
+  });
+});
+
 // 1. Get customer points balance
-router.get('/customer/:customerId', async (req, res) => {
+router.get('/customer/:customerId', requireDatabase, async (req, res) => {
   try {
     const { customerId } = req.params;
     
@@ -25,7 +67,7 @@ router.get('/customer/:customerId', async (req, res) => {
 });
 
 // 2. Get customer transaction history
-router.get('/customer/:customerId/transactions', async (req, res) => {
+router.get('/customer/:customerId/transactions', requireDatabase, async (req, res) => {
   try {
     const { customerId } = req.params;
     const { limit = 20 } = req.query;
@@ -57,7 +99,7 @@ router.get('/customer/:customerId/transactions', async (req, res) => {
 });
 
 // 3. Get customer by email
-router.get('/customer/email/:email', async (req, res) => {
+router.get('/customer/email/:email', requireDatabase, async (req, res) => {
   try {
     const { email } = req.params;
     
@@ -95,7 +137,7 @@ router.get('/customer/email/:email', async (req, res) => {
 });
 
 // 4. Manually award points (admin function)
-router.post('/award', async (req, res) => {
+router.post('/award', requireDatabase, async (req, res) => {
   try {
     const { customer_id, points, description, admin_note } = req.body;
     
@@ -156,7 +198,7 @@ router.post('/award', async (req, res) => {
 });
 
 // 5. Get store configuration
-router.get('/config', async (req, res) => {
+router.get('/config', requireDatabase, async (req, res) => {
   try {
     const config = await PointsService.getStoreConfig();
     
@@ -182,7 +224,7 @@ router.get('/config', async (req, res) => {
 });
 
 // 6. Update store configuration
-router.put('/config', async (req, res) => {
+router.put('/config', requireDatabase, async (req, res) => {
   try {
     const { points_settings, tier_settings, spin_wheel_settings } = req.body;
     
@@ -222,7 +264,7 @@ router.put('/config', async (req, res) => {
 });
 
 // 7. Points leaderboard
-router.get('/leaderboard', async (req, res) => {
+router.get('/leaderboard', requireDatabase, async (req, res) => {
   try {
     const { limit = 10 } = req.query;
     
@@ -256,7 +298,7 @@ router.get('/leaderboard', async (req, res) => {
 });
 
 // 8. Points analytics
-router.get('/analytics', async (req, res) => {
+router.get('/analytics', requireDatabase, async (req, res) => {
   try {
     const [
       totalCustomers,
