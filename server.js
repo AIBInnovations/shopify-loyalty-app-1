@@ -14,7 +14,7 @@ const logError = (error, context = '') => {
 };
 
 // Environment validation
-const requiredEnvVars = ['NODE_ENV', 'SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET', 'APP_URL'];
+const requiredEnvVars = ['NODE_ENV', 'SHOPIFY_STORE_URL', 'SHOPIFY_ACCESS_TOKEN', 'APP_URL'];
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 if (missingEnvVars.length > 0) {
   console.warn(`[WARN] Missing environment variables: ${missingEnvVars.join(', ')}`);
@@ -28,6 +28,30 @@ app.use(express.urlencoded({ extended: true }));
 
 // Routes
 app.use('/api/shopify', shopifyRoutes);
+
+// Test route to verify Shopify connection
+app.get('/api/shopify-test', async (req, res) => {
+  try {
+    if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+      return res.status(500).json({
+        error: 'Shopify not configured',
+        missing: {
+          store_url: !process.env.SHOPIFY_STORE_URL,
+          access_token: !process.env.SHOPIFY_ACCESS_TOKEN
+        }
+      });
+    }
+    
+    res.json({
+      message: 'Shopify configuration detected',
+      store_url: process.env.SHOPIFY_STORE_URL,
+      has_token: !!process.env.SHOPIFY_ACCESS_TOKEN,
+      app_url: process.env.APP_URL
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Enhanced health check endpoint
 app.get('/health', (req, res) => {
@@ -49,12 +73,15 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Shopify Loyalty App API',
     version: '1.0.0',
-    shopify_status: process.env.SHOPIFY_API_KEY ? 'configured' : 'not_configured',
+    app_type: 'custom_app',
+    shopify_status: process.env.SHOPIFY_ACCESS_TOKEN ? 'configured' : 'not_configured',
     endpoints: {
       health: '/health',
       api: '/api',
-      shopify_install: '/api/shopify/install?shop=your-shop.myshopify.com',
-      shopify_webhooks: '/api/shopify/webhooks/*'
+      shopify_status: '/api/shopify/status',
+      shopify_test: '/api/shopify/test',
+      setup_webhooks: '/api/shopify/setup-webhooks',
+      orders: '/api/shopify/orders'
     }
   });
 });
