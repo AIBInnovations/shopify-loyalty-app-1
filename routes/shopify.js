@@ -22,26 +22,39 @@ const verifyWebhookSignature = (body, signature) => {
     return true; // Allow webhooks without verification for development
   }
   
-  // Ensure body is a string or buffer
-  let bodyString;
-  if (Buffer.isBuffer(body)) {
-    bodyString = body.toString('utf8');
-  } else if (typeof body === 'string') {
-    bodyString = body;
-  } else {
-    // If body is an object, convert to string
-    bodyString = JSON.stringify(body);
-  }
-  
-  const hmac = crypto
-    .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
-    .update(bodyString, 'utf8')
-    .digest('base64');
+  try {
+    // Ensure body is a string or buffer
+    let bodyString;
+    if (Buffer.isBuffer(body)) {
+      bodyString = body.toString('utf8');
+    } else if (typeof body === 'string') {
+      bodyString = body;
+    } else {
+      // If body is an object, convert to string
+      bodyString = JSON.stringify(body);
+    }
     
-  return crypto.timingSafeEqual(
-    Buffer.from(signature, 'utf8'),
-    Buffer.from(hmac, 'utf8')
-  );
+    const hmac = crypto
+      .createHmac('sha256', SHOPIFY_WEBHOOK_SECRET)
+      .update(bodyString, 'utf8')
+      .digest('base64');
+    
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(signature, 'utf8'),
+      Buffer.from(hmac, 'utf8')
+    );
+    
+    if (!isValid) {
+      console.log('[SHOPIFY] Webhook signature verification failed');
+      console.log(`[SHOPIFY] Expected: ${hmac}`);
+      console.log(`[SHOPIFY] Received: ${signature}`);
+    }
+    
+    return isValid;
+  } catch (error) {
+    console.error('[SHOPIFY] Error verifying webhook signature:', error.message);
+    return false;
+  }
 };
 
 // Helper: Make Shopify API request
@@ -414,6 +427,30 @@ router.get('/customer/:email', async (req, res) => {
       error: 'Failed to fetch customer data',
       message: error.response?.data?.errors || error.message
     });
+  }
+});
+
+// 8. Debug webhook endpoint (temporarily disable signature verification)
+router.post('/webhooks/debug', express.raw({ type: 'application/json' }), async (req, res) => {
+  console.log('[SHOPIFY DEBUG] Webhook received');
+  console.log('[SHOPIFY DEBUG] Headers:', req.headers);
+  console.log('[SHOPIFY DEBUG] Body type:', typeof req.body);
+  console.log('[SHOPIFY DEBUG] Body length:', req.body ? req.body.length : 'undefined');
+  
+  try {
+    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
+    const order = JSON.parse(bodyString);
+    
+    console.log(`[SHOPIFY DEBUG] Order parsed: #${order.order_number || 'unknown'}`);
+    
+    res.status(200).json({
+      message: 'Debug webhook received',
+      order_number: order.order_number || 'unknown',
+      customer: order.customer?.email || 'Guest'
+    });
+  } catch (error) {
+    console.error('[SHOPIFY DEBUG] Error parsing webhook:', error.message);
+    res.status(400).json({ error: 'Failed to parse webhook data' });
   }
 });
 
