@@ -2,6 +2,9 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// Import routes
+const shopifyRoutes = require('./routes/shopify');
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -11,16 +14,20 @@ const logError = (error, context = '') => {
 };
 
 // Environment validation
-const requiredEnvVars = ['NODE_ENV'];
+const requiredEnvVars = ['NODE_ENV', 'SHOPIFY_API_KEY', 'SHOPIFY_API_SECRET', 'APP_URL'];
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 if (missingEnvVars.length > 0) {
   console.warn(`[WARN] Missing environment variables: ${missingEnvVars.join(', ')}`);
+  console.warn('[WARN] Some Shopify features may not work properly');
 }
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Routes
+app.use('/api/shopify', shopifyRoutes);
 
 // Enhanced health check endpoint
 app.get('/health', (req, res) => {
@@ -42,9 +49,12 @@ app.get('/', (req, res) => {
   res.json({
     message: 'Shopify Loyalty App API',
     version: '1.0.0',
+    shopify_status: process.env.SHOPIFY_API_KEY ? 'configured' : 'not_configured',
     endpoints: {
       health: '/health',
-      api: '/api'
+      api: '/api',
+      shopify_install: '/api/shopify/install?shop=your-shop.myshopify.com',
+      shopify_webhooks: '/api/shopify/webhooks/*'
     }
   });
 });
