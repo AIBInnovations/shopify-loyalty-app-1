@@ -7,29 +7,22 @@ class PointsService {
     try {
       // Get store configuration
       const config = storeConfig || await this.getStoreConfig();
-      const { points_per_dollar, minimum_order_amount } = config.points_settings;
+      const { minimum_order_amount } = config.points_settings;
       
       const orderTotal = parseFloat(orderData.total_price);
       
-      // Check minimum order amount
-      if (orderTotal < minimum_order_amount) {
-        return {
-          points: 0,
-          reason: `Order total $${orderTotal} is below minimum $${minimum_order_amount}`
-        };
-      }
+      // STATIC POINTS: Award 50 points for every order regardless of value
+      const staticPoints = 50;
       
-      // Calculate base points
-      const basePoints = Math.floor(orderTotal * points_per_dollar);
-      
-      // TODO: Add tier-based multipliers in future phases
-      const finalPoints = basePoints;
+      console.log(`[POINTS] Static points calculation: ${staticPoints} points for order #${orderData.order_number}`);
+      console.log(`[POINTS] Order value: ${orderTotal} (value ignored for points calculation)`);
       
       return {
-        points: finalPoints,
-        base_points: basePoints,
+        points: staticPoints,
+        base_points: staticPoints,
         order_total: orderTotal,
-        points_per_dollar
+        calculation_method: 'static',
+        note: 'Fixed 50 points per order regardless of order value'
       };
     } catch (error) {
       console.error('[POINTS] Error calculating order points:', error);
@@ -99,22 +92,23 @@ class PointsService {
         transaction_type: 'earned',
         points: pointsCalculation.points,
         order_total: pointsCalculation.order_total,
-        description: `Points earned from order #${orderData.order_number}`,
+        description: `Points earned from order #${orderData.order_number} (${pointsCalculation.calculation_method})`,
         metadata: {
           order_number: orderData.order_number,
-          base_points: pointsCalculation.base_points,
-          points_per_dollar: pointsCalculation.points_per_dollar
+          calculation_method: pointsCalculation.calculation_method,
+          note: pointsCalculation.note
         }
       });
       
-      console.log(`[POINTS] Awarded ${pointsCalculation.points} points to customer ${customerId} for order ${orderData.order_number}`);
+      console.log(`[POINTS] Awarded ${pointsCalculation.points} points to customer ${customerId} for order ${orderData.order_number} (${pointsCalculation.calculation_method})`);
       
       return {
         customer_id: customerId,
         points_awarded: pointsCalculation.points,
         new_balance: customerPoints.current_balance,
         new_tier: customerPoints.tier,
-        total_earned: customerPoints.total_earned
+        total_earned: customerPoints.total_earned,
+        calculation_method: pointsCalculation.calculation_method
       };
       
     } catch (error) {
@@ -192,14 +186,15 @@ class PointsService {
       let config = await StoreConfig.findOne({ store_domain: domain });
       
       if (!config) {
-        // Create default configuration
+        // Create default configuration with static points
         config = new StoreConfig({
           store_domain: domain,
           points_settings: {
-            points_per_dollar: 1,
-            minimum_order_amount: 0,
+            points_per_dollar: 0, // Not used with static points
+            minimum_order_amount: 0, // No minimum for static points
             points_expiry_days: 365,
-            welcome_bonus: 100
+            welcome_bonus: 100,
+            static_points_per_order: 50 // New setting for static points
           },
           tier_settings: {
             bronze_threshold: 0,
@@ -209,7 +204,7 @@ class PointsService {
           },
           spin_wheel_settings: {
             enabled: true,
-            min_order_amount: 50,
+            min_order_amount: 0, // No minimum for spin wheel with static points
             prizes: [
               { type: 'points', value: 50, label: '50 Points', probability: 30, color: '#3B82F6' },
               { type: 'points', value: 100, label: '100 Points', probability: 25, color: '#10B981' },
@@ -222,7 +217,7 @@ class PointsService {
         });
         
         await config.save();
-        console.log(`[POINTS] Created default store configuration for ${domain}`);
+        console.log(`[POINTS] Created default store configuration for ${domain} with static points`);
       }
       
       return config;

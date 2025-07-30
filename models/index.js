@@ -98,7 +98,7 @@ const storeConfigSchema = new mongoose.Schema({
   points_settings: {
     points_per_dollar: {
       type: Number,
-      default: 1,
+      default: 0, // Not used with static points
       min: 0
     },
     minimum_order_amount: {
@@ -115,6 +115,17 @@ const storeConfigSchema = new mongoose.Schema({
       type: Number,
       default: 100,
       min: 0
+    },
+    static_points_per_order: {
+      type: Number,
+      default: 50,
+      min: 0,
+      description: 'Fixed points awarded per order regardless of order value'
+    },
+    use_static_points: {
+      type: Boolean,
+      default: true,
+      description: 'Use static points per order instead of value-based calculation'
     }
   },
   tier_settings: {
