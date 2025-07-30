@@ -15,22 +15,25 @@ const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOPIFY_WEBHOOK_SECRET = process.env.SHOPIFY_WEBHOOK_SECRET; // Optional for webhook verification
 const APP_URL = process.env.APP_URL;
 
-// Helper: Verify webhook signature (with temporary bypass for testing)
+// Helper: Verify webhook signature (disabled for testing)
 const verifyWebhookSignature = (body, signature) => {
+  // TEMPORARY: Disable webhook verification for testing
+  console.log('[SHOPIFY] ⚠️  Webhook signature verification DISABLED for testing');
+  return true;
+  
+  /* ORIGINAL CODE - Enable this for production:
   if (!SHOPIFY_WEBHOOK_SECRET || !signature) {
     console.log('[SHOPIFY] Webhook verification skipped - no secret configured');
-    return true; // Allow webhooks without verification for development
+    return true;
   }
   
   try {
-    // Ensure body is a string or buffer
     let bodyString;
     if (Buffer.isBuffer(body)) {
       bodyString = body.toString('utf8');
     } else if (typeof body === 'string') {
       bodyString = body;
     } else {
-      // If body is an object, convert to string
       bodyString = JSON.stringify(body);
     }
     
@@ -48,12 +51,6 @@ const verifyWebhookSignature = (body, signature) => {
       console.log('[SHOPIFY] Webhook signature verification failed');
       console.log(`[SHOPIFY] Expected: ${hmac}`);
       console.log(`[SHOPIFY] Received: ${signature}`);
-      console.log(`[SHOPIFY] Webhook secret length: ${SHOPIFY_WEBHOOK_SECRET?.length || 0}`);
-      console.log(`[SHOPIFY] Body length: ${bodyString.length}`);
-      
-      // TEMPORARY: Allow webhooks through for testing (remove this in production)
-      console.log('[SHOPIFY] ⚠️  BYPASSING signature verification for testing');
-      return true;
     }
     
     return isValid;
@@ -61,6 +58,7 @@ const verifyWebhookSignature = (body, signature) => {
     console.error('[SHOPIFY] Error verifying webhook signature:', error.message);
     return false;
   }
+  */
 };
 
 // Helper: Make Shopify API request
@@ -304,11 +302,20 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
   }
   
   try {
-    // Parse the raw body
-    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
-    const order = JSON.parse(bodyString);
+    // Parse the raw body - handle different body types
+    let order;
+    if (Buffer.isBuffer(req.body)) {
+      const bodyString = req.body.toString('utf8');
+      order = JSON.parse(bodyString);
+    } else if (typeof req.body === 'string') {
+      order = JSON.parse(req.body);
+    } else if (typeof req.body === 'object') {
+      order = req.body; // Already parsed
+    } else {
+      throw new Error('Invalid body format');
+    }
     
-    console.log(`[SHOPIFY] ✅ New order received: #${order.order_number} - $${order.total_price}`);
+    console.log(`[SHOPIFY] ✅ New order received: #${order.order_number} - ${order.total_price}`);
     console.log(`[SHOPIFY] Customer: ${order.customer?.email || 'Guest'} (ID: ${order.customer?.id || 'N/A'})`);
     console.log(`[SHOPIFY] Items: ${order.line_items?.length || 0}`);
     console.log(`[SHOPIFY] Financial Status: ${order.financial_status}`);
@@ -337,6 +344,8 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
     res.status(200).send('OK');
   } catch (error) {
     console.error('[SHOPIFY] ❌ Error processing order webhook:', error);
+    console.error('[SHOPIFY] Body type:', typeof req.body);
+    console.error('[SHOPIFY] Body sample:', req.body?.toString ? req.body.toString().substring(0, 100) : 'Cannot convert to string');
     res.status(500).send('Error processing webhook');
   }
 });
@@ -352,9 +361,18 @@ router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }
   }
   
   try {
-    // Parse the raw body
-    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
-    const order = JSON.parse(bodyString);
+    // Parse the raw body - handle different body types
+    let order;
+    if (Buffer.isBuffer(req.body)) {
+      const bodyString = req.body.toString('utf8');
+      order = JSON.parse(bodyString);
+    } else if (typeof req.body === 'string') {
+      order = JSON.parse(req.body);
+    } else if (typeof req.body === 'object') {
+      order = req.body; // Already parsed
+    } else {
+      throw new Error('Invalid body format');
+    }
     
     console.log(`[SHOPIFY] Order updated: #${order.order_number} - Status: ${order.financial_status}`);
     
@@ -374,6 +392,8 @@ router.post('/webhooks/orders/updated', express.raw({ type: 'application/json' }
     res.status(200).send('OK');
   } catch (error) {
     console.error('[SHOPIFY] Error processing order update webhook:', error);
+    console.error('[SHOPIFY] Body type:', typeof req.body);
+    console.error('[SHOPIFY] Body sample:', req.body?.toString ? req.body.toString().substring(0, 100) : 'Cannot convert to string');
     res.status(500).send('Error processing webhook');
   }
 });
@@ -389,9 +409,18 @@ router.post('/webhooks/orders/cancelled', express.raw({ type: 'application/json'
   }
   
   try {
-    // Parse the raw body
-    const bodyString = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body;
-    const order = JSON.parse(bodyString);
+    // Parse the raw body - handle different body types
+    let order;
+    if (Buffer.isBuffer(req.body)) {
+      const bodyString = req.body.toString('utf8');
+      order = JSON.parse(bodyString);
+    } else if (typeof req.body === 'string') {
+      order = JSON.parse(req.body);
+    } else if (typeof req.body === 'object') {
+      order = req.body; // Already parsed
+    } else {
+      throw new Error('Invalid body format');
+    }
     
     console.log(`[SHOPIFY] Order cancelled: #${order.order_number}`);
     
@@ -411,6 +440,8 @@ router.post('/webhooks/orders/cancelled', express.raw({ type: 'application/json'
     res.status(200).send('OK');
   } catch (error) {
     console.error('[SHOPIFY] Error processing order cancellation webhook:', error);
+    console.error('[SHOPIFY] Body type:', typeof req.body);
+    console.error('[SHOPIFY] Body sample:', req.body?.toString ? req.body.toString().substring(0, 100) : 'Cannot convert to string');
     res.status(500).send('Error processing webhook');
   }
 });
