@@ -11,11 +11,15 @@ const connectDatabase = async () => {
     const options = {
       // Remove deprecated options and use only supported ones
       maxPoolSize: 10, // Maintain up to 10 socket connections
-      serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
+      serverSelectionTimeoutMS: 10000, // Increase timeout for Render
       socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-      family: 4 // Use IPv4, skip trying IPv6
+      family: 4, // Use IPv4, skip trying IPv6
+      // Add these for better Atlas compatibility
+      retryWrites: true,
+      w: 'majority'
     };
 
+    console.log('[DATABASE] Attempting to connect to MongoDB...');
     await mongoose.connect(process.env.MONGODB_URI, options);
     
     console.log('✅ [DATABASE] MongoDB connected successfully');
@@ -24,6 +28,17 @@ const connectDatabase = async () => {
     return true;
   } catch (error) {
     console.error('❌ [DATABASE] MongoDB connection failed:', error.message);
+    
+    // Provide helpful error messages
+    if (error.message.includes('IP')) {
+      console.error('💡 [DATABASE] TIP: Add 0.0.0.0/0 to your MongoDB Atlas IP whitelist');
+      console.error('💡 [DATABASE] Or add these Render IPs: 3.221.81.55/32, 44.226.58.253/32, 52.72.49.77/32, 54.198.116.202/32');
+    }
+    
+    if (error.message.includes('authentication')) {
+      console.error('💡 [DATABASE] TIP: Check your MongoDB username and password in MONGODB_URI');
+    }
+    
     return false;
   }
 };
