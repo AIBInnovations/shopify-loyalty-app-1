@@ -42,12 +42,21 @@ class PointsService {
       let customerPoints = await CustomerPoints.findOne({ customer_id: customerId });
       
       if (!customerPoints) {
-        // Create new customer record
+        // Create new customer record with PROPER email handling
+        const customerEmail = orderData.customer?.email || orderData.email || `customer_${customerId}@unknown.com`;
+        const firstName = orderData.customer?.first_name || orderData.first_name || '';
+        const lastName = orderData.customer?.last_name || orderData.last_name || '';
+        
+        console.log(`[POINTS] Creating new customer record:`);
+        console.log(`[POINTS] - Customer ID: ${customerId}`);
+        console.log(`[POINTS] - Email: ${customerEmail}`);
+        console.log(`[POINTS] - Name: ${firstName} ${lastName}`);
+        
         customerPoints = new CustomerPoints({
           customer_id: customerId,
-          email: orderData.customer?.email || `customer_${customerId}`,
-          first_name: orderData.customer?.first_name || '',
-          last_name: orderData.customer?.last_name || '',
+          email: customerEmail,
+          first_name: firstName,
+          last_name: lastName,
           current_balance: 0,
           total_earned: 0,
           total_redeemed: 0
@@ -72,7 +81,15 @@ class PointsService {
             }
           });
           
-          console.log(`[POINTS] Welcome bonus awarded: ${welcomeBonus} points to ${customerId}`);
+          console.log(`[POINTS] Welcome bonus awarded: ${welcomeBonus} points to ${customerId} (${customerEmail})`);
+        }
+      } else {
+        // Update existing customer's email if it was previously unknown
+        if (customerPoints.email.includes('@unknown.com') && orderData.customer?.email) {
+          console.log(`[POINTS] Updating customer email from ${customerPoints.email} to ${orderData.customer.email}`);
+          customerPoints.email = orderData.customer.email;
+          customerPoints.first_name = orderData.customer.first_name || customerPoints.first_name;
+          customerPoints.last_name = orderData.customer.last_name || customerPoints.last_name;
         }
       }
       
@@ -100,7 +117,7 @@ class PointsService {
         }
       });
       
-      console.log(`[POINTS] Awarded ${pointsCalculation.points} points to customer ${customerId} for order ${orderData.order_number} (${pointsCalculation.calculation_method})`);
+      console.log(`[POINTS] Awarded ${pointsCalculation.points} points to customer ${customerId} (${customerPoints.email}) for order ${orderData.order_number} (${pointsCalculation.calculation_method})`);
       
       return {
         customer_id: customerId,
@@ -108,7 +125,8 @@ class PointsService {
         new_balance: customerPoints.current_balance,
         new_tier: customerPoints.tier,
         total_earned: customerPoints.total_earned,
-        calculation_method: pointsCalculation.calculation_method
+        calculation_method: pointsCalculation.calculation_method,
+        customer_email: customerPoints.email
       };
       
     } catch (error) {
@@ -231,6 +249,12 @@ class PointsService {
   static async processOrder(orderData) {
     try {
       console.log(`[POINTS] Processing order ${orderData.order_number} for points`);
+      console.log(`[POINTS] Order data customer:`, {
+        id: orderData.customer?.id,
+        email: orderData.customer?.email,
+        first_name: orderData.customer?.first_name,
+        last_name: orderData.customer?.last_name
+      });
       
       // Skip if no customer
       if (!orderData.customer || !orderData.customer.id) {
