@@ -1682,4 +1682,14 @@ router.get('/script-tags', async (req, res) => {
   }
 });
 
+router.delete('/script-tag/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await shopifyAPI(`script_tags/${id}.json`, 'DELETE');
+    res.json({ success: true, message: `Script tag ${id} deleted` });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
