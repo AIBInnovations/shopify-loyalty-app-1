@@ -289,7 +289,7 @@ router.get('/webhooks', async (req, res) => {
   }
 });
 
-// 6. Webhook Routes - Order Created
+// Enhanced webhook handler for orders/create - add this to your shopify.js file
 router.post('/webhooks/orders/create', express.raw({ type: 'application/json' }), async (req, res) => {
   const signature = req.get('X-Shopify-Hmac-Sha256');
   const shop = req.get('X-Shopify-Shop-Domain');
@@ -316,28 +316,61 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
     }
     
     console.log(`[SHOPIFY] ✅ New order received: #${order.order_number} - ${order.total_price}`);
-    console.log(`[SHOPIFY] Customer: ${order.customer?.email || 'Guest'} (ID: ${order.customer?.id || 'N/A'})`);
-    console.log(`[SHOPIFY] Items: ${order.line_items?.length || 0}`);
-    console.log(`[SHOPIFY] Financial Status: ${order.financial_status}`);
+    
+    // DETAILED CUSTOMER LOGGING
+    console.log(`[SHOPIFY] 🔍 CUSTOMER DEBUG INFO:`);
+    console.log(`[SHOPIFY] - Customer object exists:`, !!order.customer);
+    console.log(`[SHOPIFY] - Customer ID:`, order.customer?.id);
+    console.log(`[SHOPIFY] - Customer Email:`, order.customer?.email);
+    console.log(`[SHOPIFY] - Customer First Name:`, order.customer?.first_name);
+    console.log(`[SHOPIFY] - Customer Last Name:`, order.customer?.last_name);
+    console.log(`[SHOPIFY] - Full customer object:`, JSON.stringify(order.customer, null, 2));
+    
+    console.log(`[SHOPIFY] Order Details:`);
+    console.log(`[SHOPIFY] - Items: ${order.line_items?.length || 0}`);
+    console.log(`[SHOPIFY] - Financial Status: ${order.financial_status}`);
+    console.log(`[SHOPIFY] - Total Price: ${order.total_price}`);
     
     // Phase 4: Calculate and award points (with error handling for DB connection)
     try {
       const mongoose = require('mongoose');
       if (mongoose.connection.readyState === 1) { // 1 = connected
+        console.log('[SHOPIFY] 📊 Database connected, processing points...');
+        
         const PointsService = require('../services/pointsService');
+        
+        // Additional check for customer data before processing
+        if (!order.customer) {
+          console.log('[SHOPIFY] ⚠️  No customer object in order data - this might be a guest checkout');
+          res.status(200).send('OK - Guest order, no points awarded');
+          return;
+        }
+        
+        if (!order.customer.id) {
+          console.log('[SHOPIFY] ⚠️  Customer object exists but no customer ID - unusual case');
+          res.status(200).send('OK - No customer ID, no points awarded');
+          return;
+        }
+        
+        if (!order.customer.email) {
+          console.log('[SHOPIFY] ⚠️  Customer has ID but no email - will use fallback email');
+        }
+        
         const result = await PointsService.processOrder(order);
         
         if (result) {
           console.log(`[SHOPIFY] 🎉 Points awarded: ${result.points_awarded} to customer ${result.customer_id}`);
-          console.log(`[SHOPIFY] New balance: ${result.new_balance} points, tier: ${result.new_tier}`);
+          console.log(`[SHOPIFY] 📧 Customer email: ${result.customer_email}`);
+          console.log(`[SHOPIFY] 💰 New balance: ${result.new_balance} points, tier: ${result.new_tier}`);
         } else {
-          console.log(`[SHOPIFY] ⚠️  No points awarded (guest order or error)`);
+          console.log(`[SHOPIFY] ⚠️  No points awarded (guest order or processing error)`);
         }
       } else {
         console.log('[SHOPIFY] ⚠️  Skipping points processing - database not connected');
       }
     } catch (pointsError) {
       console.error('[SHOPIFY] ❌ Error processing points for order:', pointsError.message);
+      console.error('[SHOPIFY] ❌ Points error stack:', pointsError.stack);
       // Don't fail the webhook if points processing fails
     }
     
@@ -345,7 +378,7 @@ router.post('/webhooks/orders/create', express.raw({ type: 'application/json' })
   } catch (error) {
     console.error('[SHOPIFY] ❌ Error processing order webhook:', error);
     console.error('[SHOPIFY] Body type:', typeof req.body);
-    console.error('[SHOPIFY] Body sample:', req.body?.toString ? req.body.toString().substring(0, 100) : 'Cannot convert to string');
+    console.error('[SHOPIFY] Body sample:', req.body?.toString ? req.body.toString().substring(0, 200) : 'Cannot convert to string');
     res.status(500).send('Error processing webhook');
   }
 });
@@ -621,6 +654,114 @@ router.post('/webhooks/debug', express.raw({ type: 'application/json' }), async 
     res.status(400).json({ 
       error: 'Failed to parse webhook data',
       message: error.message 
+    });
+  }
+});
+
+// Add this test route to your shopify.js file for debugging
+
+// Test route to simulate order processing
+router.post('/test/process-order', async (req, res) => {
+  try {
+    console.log('[SHOPIFY TEST] Processing test order...');
+    
+    // Sample order data that mimics what Shopify sends
+    const testOrder = {
+      id: 999999999,
+      order_number: 'TEST-' + Date.now(),
+      total_price: '99.99',
+      financial_status: 'paid',
+      created_at: new Date().toISOString(),
+      customer: {
+        id: req.body.customer_id || 8219723301058, // Use provided customer ID or default
+        email: req.body.customer_email || 'test@example.com', // Use provided email or default
+        first_name: req.body.first_name || 'Test',
+        last_name: req.body.last_name || 'Customer'
+      },
+      line_items: [
+        {
+          id: 1,
+          title: 'Test Product',
+          quantity: 1,
+          price: '99.99'
+        }
+      ]
+    };
+    
+    console.log('[SHOPIFY TEST] Test order created:', JSON.stringify(testOrder, null, 2));
+    
+    // Check database connection
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(500).json({
+        success: false,
+        error: 'Database not connected',
+        order_data: testOrder
+      });
+    }
+    
+    // Process with points service
+    const PointsService = require('../services/pointsService');
+    const result = await PointsService.processOrder(testOrder);
+    
+    console.log('[SHOPIFY TEST] Points processing result:', result);
+    
+    res.json({
+      success: true,
+      message: 'Test order processed',
+      test_order: testOrder,
+      points_result: result
+    });
+    
+  } catch (error) {
+    console.error('[SHOPIFY TEST] Error processing test order:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process test order',
+      message: error.message,
+      stack: error.stack
+    });
+  }
+});
+
+// Test route to get customer from Shopify API
+router.get('/test/shopify-customer/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!process.env.SHOPIFY_STORE_URL || !process.env.SHOPIFY_ACCESS_TOKEN) {
+      return res.status(500).json({
+        error: 'Shopify not configured',
+        missing: {
+          store_url: !process.env.SHOPIFY_STORE_URL,
+          access_token: !process.env.SHOPIFY_ACCESS_TOKEN
+        }
+      });
+    }
+    
+    const response = await shopifyAPI(`customers/${id}.json`);
+    const customer = response.data.customer;
+    
+    res.json({
+      success: true,
+      customer: {
+        id: customer.id,
+        email: customer.email,
+        first_name: customer.first_name,
+        last_name: customer.last_name,
+        created_at: customer.created_at,
+        updated_at: customer.updated_at,
+        total_spent: customer.total_spent,
+        orders_count: customer.orders_count
+      }
+    });
+    
+  } catch (error) {
+    console.error('[SHOPIFY TEST] Error fetching customer:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch customer from Shopify',
+      message: error.response?.data?.errors || error.message
     });
   }
 });

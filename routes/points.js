@@ -350,4 +350,117 @@ router.get('/analytics', requireDatabase, async (req, res) => {
   }
 });
 
+// Add this new route to your points.js file to help debug customer issues
+
+// Debug route - Get all customers (for debugging)
+router.get('/debug/customers', requireDatabase, async (req, res) => {
+  try {
+    const customers = await CustomerPoints.find({})
+      .sort({ created_at: -1 })
+      .limit(20)
+      .select('customer_id email first_name last_name current_balance tier created_at');
+    
+    res.json({
+      success: true,
+      message: 'Recent customers (last 20)',
+      customers: customers.map(customer => ({
+        customer_id: customer.customer_id,
+        email: customer.email,
+        name: `${customer.first_name} ${customer.last_name}`.trim(),
+        current_balance: customer.current_balance,
+        tier: customer.tier,
+        created_at: customer.created_at,
+        is_unknown_email: customer.email.includes('@unknown.com')
+      })),
+      count: customers.length,
+      unknown_emails: customers.filter(c => c.email.includes('@unknown.com')).length
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error getting debug customers:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get customers for debugging',
+      message: error.message
+    });
+  }
+});
+
+// Debug route - Fix unknown emails (manual fix)
+router.post('/debug/fix-emails', requireDatabase, async (req, res) => {
+  try {
+    const customersWithUnknownEmail = await CustomerPoints.find({
+      email: { $regex: '@unknown.com$' }
+    });
+
+    if (customersWithUnknownEmail.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No customers with unknown emails found',
+        fixed: 0
+      });
+    }
+
+    const fixResults = [];
+    
+    // For each customer with unknown email, try to get their real email from Shopify
+    for (const customer of customersWithUnknownEmail) {
+      try {
+        // Try to get customer from Shopify API
+        const shopifyAPI = require('axios').create({
+          baseURL: `https://${process.env.SHOPIFY_STORE_URL}/admin/api/2023-10`,
+          headers: {
+            'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN
+          }
+        });
+
+        const shopifyResponse = await shopifyAPI.get(`/customers/${customer.customer_id}.json`);
+        const shopifyCustomer = shopifyResponse.data.customer;
+
+        if (shopifyCustomer && shopifyCustomer.email) {
+          // Update the customer record
+          customer.email = shopifyCustomer.email;
+          customer.first_name = shopifyCustomer.first_name || customer.first_name;
+          customer.last_name = shopifyCustomer.last_name || customer.last_name;
+          
+          await customer.save();
+          
+          fixResults.push({
+            customer_id: customer.customer_id,
+            old_email: `customer_${customer.customer_id}@unknown.com`,
+            new_email: shopifyCustomer.email,
+            status: 'fixed'
+          });
+          
+          console.log(`[DEBUG] Fixed email for customer ${customer.customer_id}: ${shopifyCustomer.email}`);
+        }
+      } catch (shopifyError) {
+        fixResults.push({
+          customer_id: customer.customer_id,
+          old_email: customer.email,
+          new_email: null,
+          status: 'failed',
+          error: shopifyError.message
+        });
+        console.error(`[DEBUG] Failed to fix email for customer ${customer.customer_id}:`, shopifyError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Attempted to fix ${customersWithUnknownEmail.length} customers`,
+      results: fixResults,
+      fixed: fixResults.filter(r => r.status === 'fixed').length,
+      failed: fixResults.filter(r => r.status === 'failed').length
+    });
+
+  } catch (error) {
+    console.error('[POINTS API] Error fixing emails:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fix emails',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
