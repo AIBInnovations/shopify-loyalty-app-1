@@ -1165,7 +1165,9 @@ router.delete('/uninstall-checkout-script', async (req, res) => {
   }
 });
 
-// Install checkout script for custom app
+// Replace the existing setup-checkout-integration route in your shopify.js file
+
+// Install checkout script for custom app (FIXED VERSION)
 router.post('/setup-checkout-integration', async (req, res) => {
   try {
     console.log('[CUSTOM APP] Setting up checkout integration...');
@@ -1188,11 +1190,11 @@ router.post('/setup-checkout-integration', async (req, res) => {
       });
     }
 
-    // Create new script tag for checkout pages
+    // Create new script tag (REMOVED display_scope - not supported)
     const scriptTag = {
       event: 'onload',
-      src: scriptUrl,
-      display_scope: 'checkout' // Only on checkout pages
+      src: scriptUrl
+      // Removed display_scope as it's not valid for script tags
     };
 
     const response = await shopifyAPI('script_tags.json', 'POST', {
@@ -1206,6 +1208,7 @@ router.post('/setup-checkout-integration', async (req, res) => {
       message: 'Checkout integration installed successfully',
       script_id: response.data.script_tag.id,
       script_url: scriptUrl,
+      note: 'Script will load on all pages but only activate on checkout pages',
       instructions: 'Your loyalty points redemption widget will now appear on checkout pages for logged-in customers.'
     });
 
@@ -1219,7 +1222,7 @@ router.post('/setup-checkout-integration', async (req, res) => {
   }
 });
 
-// Serve the checkout widget script
+// Enhanced checkout widget script that detects checkout pages
 router.get('/checkout-points-widget.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
   res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
@@ -1228,6 +1231,14 @@ router.get('/checkout-points-widget.js', (req, res) => {
 // Loyalty Points Checkout Widget for Custom App
 (function() {
   'use strict';
+
+  // Only run on checkout pages
+  if (!window.location.pathname.includes('/checkouts/') && 
+      !window.location.pathname.includes('/checkout') &&
+      typeof Shopify === 'undefined') {
+    console.log('[LOYALTY] Not a checkout page, skipping widget load');
+    return;
+  }
 
   const LOYALTY_CONFIG = {
     apiUrl: '${APP_URL}',
@@ -1238,10 +1249,17 @@ router.get('/checkout-points-widget.js', (req, res) => {
   let customerData = null;
   let selectedPoints = 0;
 
-  console.log('[LOYALTY] Checkout widget loaded');
+  console.log('[LOYALTY] Checkout widget loaded on:', window.location.pathname);
 
   // Wait for Shopify checkout to be ready
   function initializeWidget() {
+    // Double check we're on checkout
+    if (!window.location.pathname.includes('/checkouts/') && 
+        !window.location.pathname.includes('/checkout')) {
+      console.log('[LOYALTY] Not on checkout page, aborting');
+      return;
+    }
+
     if (typeof Shopify === 'undefined' || !Shopify.Checkout) {
       setTimeout(initializeWidget, 500);
       return;
@@ -1283,26 +1301,40 @@ router.get('/checkout-points-widget.js', (req, res) => {
   }
 
   function injectWidget(data) {
-    // Find a good insertion point
+    // Enhanced selector list for checkout pages
     const selectors = [
       '.section--discount-code',
       '.section--gift-card',
       '[data-discount-form]',
+      '.discount-code',
+      '.gift-card',
       '.fieldset',
       '.section',
       '.content-box',
-      '.step__sections'
+      '.step__sections',
+      '.section--reductions',
+      '.order-summary__sections'
     ];
 
     let targetElement = null;
     for (const selector of selectors) {
       targetElement = document.querySelector(selector);
-      if (targetElement) break;
+      if (targetElement) {
+        console.log('[LOYALTY] Found insertion point:', selector);
+        break;
+      }
     }
 
     if (!targetElement) {
-      console.log('[LOYALTY] Could not find suitable insertion point');
-      return;
+      console.log('[LOYALTY] Could not find suitable insertion point, trying body');
+      // Fallback: insert at top of main content
+      const mainContent = document.querySelector('main') || document.querySelector('.main') || document.body;
+      if (mainContent && mainContent.firstChild) {
+        targetElement = mainContent.firstChild;
+      } else {
+        console.log('[LOYALTY] No suitable insertion point found');
+        return;
+      }
     }
 
     const widgetHTML = createWidgetHTML(data);
