@@ -1652,4 +1652,34 @@ router.get('/checkout-points-widget.js', (req, res) => {
   res.send(script);
 });
 
+// Add this route to your shopify.js file to check script tags
+
+// List all script tags
+router.get('/script-tags', async (req, res) => {
+  try {
+    const response = await shopifyAPI('script_tags.json');
+    const scriptTags = response.data.script_tags;
+    
+    res.json({
+      success: true,
+      total_count: scriptTags.length,
+      script_tags: scriptTags.map(script => ({
+        id: script.id,
+        src: script.src,
+        event: script.event,
+        created_at: script.created_at,
+        is_our_app: script.src?.includes(APP_URL) || false
+      })),
+      our_app_scripts: scriptTags.filter(s => s.src?.includes(APP_URL))
+    });
+  } catch (error) {
+    console.error('[SHOPIFY] Error listing script tags:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to list script tags',
+      message: error.response?.data?.errors || error.message
+    });
+  }
+});
+
 module.exports = router;
