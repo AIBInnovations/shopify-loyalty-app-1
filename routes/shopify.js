@@ -1173,7 +1173,7 @@ router.post('/setup-checkout-integration', async (req, res) => {
     console.log('[CUSTOM APP] Setting up checkout integration...');
 
     // For custom apps, we'll use Script Tags to inject our checkout script
-    const scriptUrl = `${APP_URL}/checkout-points-widget.js`;
+    const scriptUrl = `${APP_URL}/api/shopify/checkout-points-widget.js`;
     
     // Check if script already exists
     const existingScripts = await shopifyAPI('script_tags.json');
