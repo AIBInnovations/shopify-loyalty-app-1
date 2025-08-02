@@ -1,0 +1,17 @@
+{
+  "name": "loyalty-checkout-extension",
+  "version": "1.0.0",
+  "description": "Loyalty points redemption for checkout",
+  "main": "src/index.js",
+  "scripts": {
+    "build": "shopify app build",
+    "dev": "shopify app dev"
+  },
+  "dependencies": {
+    "@shopify/ui-extensions": "^2023.10.0",
+    "@shopify/ui-extensions-react": "^2023.10.0"
+  },
+  "devDependencies": {
+    "@shopify/cli": "^3.50.0"
+  }
+}

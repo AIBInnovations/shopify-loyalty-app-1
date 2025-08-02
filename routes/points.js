@@ -463,4 +463,166 @@ router.post('/debug/fix-emails', requireDatabase, async (req, res) => {
   }
 });
 
+// Get redemption options for customer
+router.get('/customer/:customerId/redemption-options', requireDatabase, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    
+    const options = await PointsService.getRedemptionOptions(customerId);
+    
+    res.json({
+      success: true,
+      customer_id: customerId,
+      redemption: options
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error getting redemption options:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get redemption options',
+      message: error.message
+    });
+  }
+});
+
+// Get redemption options by email
+router.get('/customer/email/:email/redemption-options', requireDatabase, async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const customerPoints = await CustomerPoints.findOne({ email: email.toLowerCase() });
+    
+    if (!customerPoints) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found',
+        email
+      });
+    }
+    
+    const options = await PointsService.getRedemptionOptions(customerPoints.customer_id);
+    
+    res.json({
+      success: true,
+      customer_id: customerPoints.customer_id,
+      email: customerPoints.email,
+      redemption: options
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error getting redemption options by email:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get redemption options',
+      message: error.message
+    });
+  }
+});
+
+// Validate redemption before processing
+router.post('/validate-redemption', requireDatabase, async (req, res) => {
+  try {
+    const { customer_id, points } = req.body;
+    
+    if (!customer_id || !points) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: customer_id, points'
+      });
+    }
+    
+    const validation = await PointsService.validateRedemption(customer_id, parseInt(points));
+    
+    res.json({
+      success: true,
+      validation
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error validating redemption:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate redemption',
+      message: error.message
+    });
+  }
+});
+
+// Redeem points for discount
+router.post('/redeem', requireDatabase, async (req, res) => {
+  try {
+    const { customer_id, points, order_id, description } = req.body;
+    
+    if (!customer_id || !points) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: customer_id, points'
+      });
+    }
+    
+    const result = await PointsService.redeemPoints(
+      customer_id,
+      parseInt(points),
+      order_id,
+      description
+    );
+    
+    res.json({
+      success: true,
+      message: 'Points redeemed successfully',
+      redemption: result
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error redeeming points:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to redeem points',
+      message: error.message
+    });
+  }
+});
+
+// Redeem points by email
+router.post('/redeem-by-email', requireDatabase, async (req, res) => {
+  try {
+    const { email, points, order_id, description } = req.body;
+    
+    if (!email || !points) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: email, points'
+      });
+    }
+    
+    // Find customer by email
+    const customerPoints = await CustomerPoints.findOne({ email: email.toLowerCase() });
+    
+    if (!customerPoints) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found',
+        email
+      });
+    }
+    
+    const result = await PointsService.redeemPoints(
+      customerPoints.customer_id,
+      parseInt(points),
+      order_id,
+      description
+    );
+    
+    res.json({
+      success: true,
+      message: 'Points redeemed successfully',
+      redemption: result
+    });
+  } catch (error) {
+    console.error('[POINTS API] Error redeeming points by email:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to redeem points',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

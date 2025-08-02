@@ -1,0 +1,17 @@
+api_version = "2023-10"
+
+[[extensions]]
+type = "checkout_ui_extension"
+name = "Loyalty Points Redemption"
+handle = "loyalty-points-checkout"
+
+[extensions.capabilities]
+api_access = true
+block_progress = false
+
+# Extension points where the component will appear
+[[extensions.targeting]]
+target = "purchase.checkout.block.render"
+
+[[extensions.targeting]]
+target = "customer-account.order-status.block.render"
