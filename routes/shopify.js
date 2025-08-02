@@ -1165,4 +1165,459 @@ router.delete('/uninstall-checkout-script', async (req, res) => {
   }
 });
 
+// Install checkout script for custom app
+router.post('/setup-checkout-integration', async (req, res) => {
+  try {
+    console.log('[CUSTOM APP] Setting up checkout integration...');
+
+    // For custom apps, we'll use Script Tags to inject our checkout script
+    const scriptUrl = `${APP_URL}/checkout-points-widget.js`;
+    
+    // Check if script already exists
+    const existingScripts = await shopifyAPI('script_tags.json');
+    const existingScript = existingScripts.data.script_tags.find(
+      script => script.src === scriptUrl
+    );
+
+    if (existingScript) {
+      return res.json({
+        success: true,
+        message: 'Checkout integration already installed',
+        script_id: existingScript.id,
+        script_url: scriptUrl
+      });
+    }
+
+    // Create new script tag for checkout pages
+    const scriptTag = {
+      event: 'onload',
+      src: scriptUrl,
+      display_scope: 'checkout' // Only on checkout pages
+    };
+
+    const response = await shopifyAPI('script_tags.json', 'POST', {
+      script_tag: scriptTag
+    });
+
+    console.log('[CUSTOM APP] Checkout script installed:', response.data.script_tag.id);
+
+    res.json({
+      success: true,
+      message: 'Checkout integration installed successfully',
+      script_id: response.data.script_tag.id,
+      script_url: scriptUrl,
+      instructions: 'Your loyalty points redemption widget will now appear on checkout pages for logged-in customers.'
+    });
+
+  } catch (error) {
+    console.error('[CUSTOM APP] Error setting up checkout integration:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to setup checkout integration',
+      message: error.response?.data?.errors || error.message
+    });
+  }
+});
+
+// Serve the checkout widget script
+router.get('/checkout-points-widget.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+  
+  const script = `
+// Loyalty Points Checkout Widget for Custom App
+(function() {
+  'use strict';
+
+  const LOYALTY_CONFIG = {
+    apiUrl: '${APP_URL}',
+    conversionRate: 100, // 100 points = $1
+    minRedemption: 100
+  };
+
+  let customerData = null;
+  let selectedPoints = 0;
+
+  console.log('[LOYALTY] Checkout widget loaded');
+
+  // Wait for Shopify checkout to be ready
+  function initializeWidget() {
+    if (typeof Shopify === 'undefined' || !Shopify.Checkout) {
+      setTimeout(initializeWidget, 500);
+      return;
+    }
+
+    const customer = Shopify.Checkout.customer;
+    if (!customer || !customer.email) {
+      console.log('[LOYALTY] No customer found in checkout');
+      return;
+    }
+
+    console.log('[LOYALTY] Customer found:', customer.email);
+    loadCustomerPoints(customer.email);
+  }
+
+  async function loadCustomerPoints(email) {
+    try {
+      const response = await fetch(
+        LOYALTY_CONFIG.apiUrl + '/api/points/customer/email/' + encodeURIComponent(email) + '/redemption-options'
+      );
+      
+      if (!response.ok) {
+        console.log('[LOYALTY] Customer not found in loyalty system');
+        return;
+      }
+
+      const data = await response.json();
+      customerData = data;
+
+      if (data.redemption.available) {
+        injectWidget(data);
+      } else if (data.redemption.balance > 0) {
+        showPointsBalance(data);
+      }
+
+    } catch (error) {
+      console.error('[LOYALTY] Error loading customer points:', error);
+    }
+  }
+
+  function injectWidget(data) {
+    // Find a good insertion point
+    const selectors = [
+      '.section--discount-code',
+      '.section--gift-card',
+      '[data-discount-form]',
+      '.fieldset',
+      '.section',
+      '.content-box',
+      '.step__sections'
+    ];
+
+    let targetElement = null;
+    for (const selector of selectors) {
+      targetElement = document.querySelector(selector);
+      if (targetElement) break;
+    }
+
+    if (!targetElement) {
+      console.log('[LOYALTY] Could not find suitable insertion point');
+      return;
+    }
+
+    const widgetHTML = createWidgetHTML(data);
+    targetElement.insertAdjacentHTML('beforebegin', widgetHTML);
+    setupEventListeners(data);
+  }
+
+  function createWidgetHTML(data) {
+    return \`
+      <div id="loyalty-checkout-widget" class="section section--loyalty-points" style="
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 15px;
+        padding: 25px;
+        margin: 25px 0;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        position: relative;
+        overflow: hidden;
+      ">
+        <!-- Background decoration -->
+        <div style="
+          position: absolute;
+          top: -50%;
+          right: -20px;
+          width: 100px;
+          height: 200%;
+          background: rgba(255,255,255,0.1);
+          transform: rotate(15deg);
+          pointer-events: none;
+        "></div>
+        
+        <div style="position: relative; z-index: 2;">
+          <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 25px;">
+            <span style="font-size: 28px;">⭐</span>
+            <div>
+              <h3 style="margin: 0; font-size: 20px; font-weight: 700;">Use Your Loyalty Points</h3>
+              <div style="font-size: 14px; opacity: 0.9; margin-top: 5px;">
+                You have \${data.redemption.balance} points • 100 points = $1.00
+              </div>
+            </div>
+          </div>
+
+          <div id="redemption-options" style="
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-bottom: 25px;
+          ">
+            \${data.redemption.options.map(option => \`
+              <button 
+                class="points-option" 
+                data-points="\${option.points}"
+                style="
+                  background: rgba(255,255,255,0.2);
+                  border: 2px solid rgba(255,255,255,0.3);
+                  color: white;
+                  border-radius: 12px;
+                  padding: 18px 12px;
+                  cursor: pointer;
+                  font-size: 14px;
+                  text-align: center;
+                  transition: all 0.3s ease;
+                  backdrop-filter: blur(10px);
+                  position: relative;
+                  overflow: hidden;
+                "
+                onmouseover="this.style.background='rgba(255,255,255,0.3)'; this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 25px rgba(0,0,0,0.2)';"
+                onmouseout="this.style.background='rgba(255,255,255,0.2)'; this.style.transform='translateY(0)'; this.style.boxShadow='none';"
+              >
+                <div style="font-weight: bold; font-size: 16px; margin-bottom: 8px;">
+                  \${option.points} Points
+                </div>
+                <div style="color: #FFD700; font-weight: bold; font-size: 18px;">
+                  $\${option.discount.toFixed(2)} OFF
+                </div>
+              </button>
+            \`).join('')}
+          </div>
+
+          <button 
+            id="apply-points-btn" 
+            disabled
+            style="
+              width: 100%;
+              background: rgba(255,255,255,0.3);
+              color: white;
+              border: 2px solid rgba(255,255,255,0.4);
+              padding: 18px 25px;
+              border-radius: 12px;
+              font-size: 18px;
+              font-weight: bold;
+              cursor: not-allowed;
+              transition: all 0.3s ease;
+              backdrop-filter: blur(10px);
+              text-transform: uppercase;
+              letter-spacing: 1px;
+            "
+          >
+            Select Points to Redeem
+          </button>
+
+          <div id="loyalty-message" style="
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 15px;
+            text-align: center;
+            display: none;
+            backdrop-filter: blur(15px);
+            font-weight: 600;
+          "></div>
+        </div>
+      </div>
+    \`;
+  }
+
+  function setupEventListeners(data) {
+    // Handle option selection
+    document.querySelectorAll('.points-option').forEach(button => {
+      button.addEventListener('click', function() {
+        selectedPoints = parseInt(this.dataset.points);
+        
+        // Reset all buttons
+        document.querySelectorAll('.points-option').forEach(btn => {
+          btn.style.background = 'rgba(255,255,255,0.2)';
+          btn.style.borderColor = 'rgba(255,255,255,0.3)';
+        });
+        
+        // Highlight selected
+        this.style.background = 'rgba(255,255,255,0.4)';
+        this.style.borderColor = 'rgba(255,255,255,0.8)';
+        this.style.boxShadow = '0 0 20px rgba(255,255,255,0.3)';
+        
+        updateApplyButton();
+      });
+    });
+
+    // Handle apply button
+    document.getElementById('apply-points-btn').addEventListener('click', applyPointsDiscount);
+  }
+
+  function updateApplyButton() {
+    const applyBtn = document.getElementById('apply-points-btn');
+    
+    if (selectedPoints >= LOYALTY_CONFIG.minRedemption) {
+      const discount = Math.floor(selectedPoints / LOYALTY_CONFIG.conversionRate);
+      applyBtn.disabled = false;
+      applyBtn.style.background = 'rgba(255,255,255,0.9)';
+      applyBtn.style.color = '#667eea';
+      applyBtn.style.cursor = 'pointer';
+      applyBtn.style.fontWeight = 'bold';
+      applyBtn.textContent = \`Redeem \${selectedPoints} Points ($\${discount}.00 Off)\`;
+      
+      applyBtn.onmouseover = function() {
+        this.style.background = 'white';
+        this.style.transform = 'translateY(-2px)';
+        this.style.boxShadow = '0 8px 25px rgba(0,0,0,0.2)';
+      };
+      applyBtn.onmouseout = function() {
+        this.style.background = 'rgba(255,255,255,0.9)';
+        this.style.transform = 'translateY(0)';
+        this.style.boxShadow = 'none';
+      };
+    } else {
+      applyBtn.disabled = true;
+      applyBtn.style.background = 'rgba(255,255,255,0.3)';
+      applyBtn.style.color = 'white';
+      applyBtn.style.cursor = 'not-allowed';
+      applyBtn.textContent = 'Select Points to Redeem';
+      applyBtn.onmouseover = null;
+      applyBtn.onmouseout = null;
+    }
+  }
+
+  async function applyPointsDiscount() {
+    if (selectedPoints < LOYALTY_CONFIG.minRedemption) return;
+
+    const applyBtn = document.getElementById('apply-points-btn');
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Creating Discount Code...';
+    applyBtn.style.background = 'rgba(255,255,255,0.5)';
+
+    try {
+      // Create discount code
+      const discountResponse = await fetch(LOYALTY_CONFIG.apiUrl + '/api/shopify/create-flexible-discount-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          points: selectedPoints,
+          discount_amount: Math.floor(selectedPoints / LOYALTY_CONFIG.conversionRate),
+          email: Shopify.Checkout.customer.email
+        })
+      });
+
+      const discountData = await discountResponse.json();
+
+      if (discountData.success) {
+        // Redeem points
+        await fetch(LOYALTY_CONFIG.apiUrl + '/api/points/redeem-by-email', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: Shopify.Checkout.customer.email,
+            points: selectedPoints,
+            description: 'Checkout redemption - ' + discountData.discount_code
+          })
+        });
+
+        showMessage(\`
+          <div style="font-size: 20px; margin-bottom: 10px;">🎉</div>
+          <strong>Discount Code Created!</strong><br>
+          <div style="font-size: 22px; color: #FFD700; margin: 15px 0; font-weight: bold; letter-spacing: 2px;">
+            \${discountData.discount_code}
+          </div>
+          <div style="font-size: 14px; opacity: 0.9;">
+            Copy this code and paste it in the discount field above ↑
+          </div>
+        \`, 'success');
+
+        // Hide widget after 15 seconds
+        setTimeout(() => {
+          const widget = document.getElementById('loyalty-checkout-widget');
+          if (widget) {
+            widget.style.animation = 'fadeOut 1s ease-out forwards';
+            setTimeout(() => widget.remove(), 1000);
+          }
+        }, 15000);
+
+      } else {
+        throw new Error(discountData.message || 'Failed to create discount code');
+      }
+
+    } catch (error) {
+      console.error('[LOYALTY] Error applying points:', error);
+      showMessage('Failed to create discount code. Please try again.', 'error');
+      applyBtn.disabled = false;
+      applyBtn.textContent = \`Redeem \${selectedPoints} Points\`;
+      applyBtn.style.background = 'rgba(255,255,255,0.9)';
+    }
+  }
+
+  function showMessage(message, type) {
+    const messageEl = document.getElementById('loyalty-message');
+    messageEl.innerHTML = message;
+    messageEl.style.display = 'block';
+    
+    if (type === 'success') {
+      messageEl.style.background = 'rgba(76, 175, 80, 0.9)';
+      messageEl.style.border = '2px solid rgba(76, 175, 80, 1)';
+    } else {
+      messageEl.style.background = 'rgba(244, 67, 54, 0.9)';
+      messageEl.style.border = '2px solid rgba(244, 67, 54, 1)';
+    }
+  }
+
+  function showPointsBalance(data) {
+    const selectors = [
+      '.section--discount-code',
+      '.section--gift-card',
+      '.fieldset',
+      '.section'
+    ];
+
+    let targetElement = null;
+    for (const selector of selectors) {
+      targetElement = document.querySelector(selector);
+      if (targetElement) break;
+    }
+
+    if (targetElement) {
+      targetElement.insertAdjacentHTML('beforebegin', \`
+        <div style="
+          background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+          border: 2px solid #2196f3;
+          border-radius: 15px;
+          padding: 25px;
+          margin: 25px 0;
+          text-align: center;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          box-shadow: 0 8px 20px rgba(33, 150, 243, 0.2);
+        ">
+          <div style="font-size: 24px; margin-bottom: 15px;">💰</div>
+          <strong style="font-size: 18px; color: #1976d2; display: block; margin-bottom: 10px;">
+            You have \${data.redemption.balance} loyalty points!
+          </strong>
+          <div style="color: #1565c0; font-size: 14px;">
+            You need at least 100 points to redeem for discounts.
+          </div>
+        </div>
+      \`);
+    }
+  }
+
+  // Add fadeOut animation
+  const style = document.createElement('style');
+  style.textContent = \`
+    @keyframes fadeOut {
+      from { opacity: 1; transform: translateY(0); }
+      to { opacity: 0; transform: translateY(-20px); }
+    }
+  \`;
+  document.head.appendChild(style);
+
+  // Initialize
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeWidget);
+  } else {
+    initializeWidget();
+  }
+
+})();
+  `;
+
+  res.send(script);
+});
+
 module.exports = router;
