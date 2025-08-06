@@ -1692,4 +1692,292 @@ router.delete('/script-tag/:id', async (req, res) => {
   }
 });
 
+// Enhanced discount code creation for loyalty system
+// Add these routes to your routes/shopify.js file
+
+// Create loyalty discount code with enhanced features
+router.post('/create-loyalty-discount', async (req, res) => {
+  try {
+    const { customer_id, customer_email, points, redemption_source = 'cart' } = req.body;
+    
+    // Validate input
+    if (!customer_id || !customer_email || !points) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: customer_id, customer_email, points'
+      });
+    }
+
+    if (points < 100 || points % 100 !== 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Points must be a multiple of 100 (minimum 100)'
+      });
+    }
+
+    // Calculate discount amount (100 points = $1)
+    const discountAmount = Math.floor(points / 100);
+    
+    // Generate unique discount code
+    const timestamp = Date.now().toString().slice(-6);
+    const randomSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const discountCode = `LOYALTY${points}_${timestamp}${randomSuffix}`;
+    
+    console.log(`[LOYALTY] Creating discount code ${discountCode} for ${customer_email}: ${points} points = $${discountAmount}`);
+
+    // Create price rule
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000); // 24 hours from now
+    
+    const priceRule = {
+      title: `Loyalty Points Redemption - ${points} points`,
+      target_type: 'line_item',
+      target_selection: 'all',
+      allocation_method: 'across',
+      value_type: 'fixed_amount',
+      value: `-${discountAmount}.00`,
+      customer_selection: 'all', // Allow any customer to use the code
+      usage_limit: 1, // Can only be used once
+      once_per_customer: true,
+      starts_at: now.toISOString(),
+      ends_at: expiresAt.toISOString(),
+      // Add some metadata for tracking
+      prerequisite_subtotal_range: {
+        greater_than_or_equal_to: discountAmount.toString() // Minimum cart value = discount amount
+      }
+    };
+
+    // Create the price rule
+    const priceRuleResponse = await shopifyAPI('price_rules.json', 'POST', {
+      price_rule: priceRule
+    });
+
+    const priceRuleId = priceRuleResponse.data.price_rule.id;
+    console.log(`[LOYALTY] Price rule created: ${priceRuleId}`);
+
+    // Create the discount code
+    const discountCodeData = {
+      code: discountCode,
+      usage_count: 0
+    };
+
+    const discountCodeResponse = await shopifyAPI(
+      `price_rules/${priceRuleId}/discount_codes.json`,
+      'POST',
+      { discount_code: discountCodeData }
+    );
+
+    console.log(`[LOYALTY] Discount code created successfully: ${discountCode}`);
+
+    // Prepare response data
+    const responseData = {
+      success: true,
+      discount_code: discountCode,
+      discount_amount: discountAmount,
+      points_redeemed: points,
+      customer_id: customer_id,
+      customer_email: customer_email,
+      expires_at: expiresAt.toISOString(),
+      price_rule_id: priceRuleId,
+      discount_code_id: discountCodeResponse.data.discount_code.id,
+      redemption_source: redemption_source,
+      minimum_cart_value: discountAmount,
+      instructions: `Use code "${discountCode}" at checkout for $${discountAmount}.00 off`,
+      created_at: now.toISOString()
+    };
+
+    res.json(responseData);
+
+  } catch (error) {
+    console.error('[LOYALTY] Error creating discount code:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to create discount code',
+      message: error.response?.data?.errors || error.message,
+      details: error.response?.data
+    });
+  }
+});
+
+// Validate discount code (check if it exists and is usable)
+router.get('/validate-discount/:code', async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`[LOYALTY] Validating discount code: ${code}`);
+
+    // Get all price rules and find the one with our discount code
+    const priceRulesResponse = await shopifyAPI('price_rules.json?limit=250');
+    
+    let foundDiscountCode = null;
+    let priceRule = null;
+
+    for (const rule of priceRulesResponse.data.price_rules) {
+      try {
+        const codesResponse = await shopifyAPI(`price_rules/${rule.id}/discount_codes.json`);
+        const matchingCode = codesResponse.data.discount_codes.find(dc => dc.code === code);
+        
+        if (matchingCode) {
+          foundDiscountCode = matchingCode;
+          priceRule = rule;
+          break;
+        }
+      } catch (err) {
+        // Continue searching
+      }
+    }
+
+    if (!foundDiscountCode || !priceRule) {
+      return res.json({
+        success: false,
+        valid: false,
+        error: 'Discount code not found',
+        code: code
+      });
+    }
+
+    // Check if code is still valid
+    const now = new Date();
+    const expiresAt = new Date(priceRule.ends_at);
+    const isExpired = now > expiresAt;
+    const isUsed = foundDiscountCode.usage_count >= priceRule.usage_limit;
+
+    res.json({
+      success: true,
+      valid: !isExpired && !isUsed,
+      discount_code: foundDiscountCode.code,
+      discount_amount: Math.abs(parseFloat(priceRule.value)),
+      usage_count: foundDiscountCode.usage_count,
+      usage_limit: priceRule.usage_limit,
+      expires_at: priceRule.ends_at,
+      is_expired: isExpired,
+      is_used: isUsed,
+      created_at: foundDiscountCode.created_at
+    });
+
+  } catch (error) {
+    console.error('[LOYALTY] Error validating discount code:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate discount code',
+      message: error.message
+    });
+  }
+});
+
+// Get discount code usage statistics
+router.get('/discount-stats', async (req, res) => {
+  try {
+    console.log('[LOYALTY] Fetching discount code statistics...');
+
+    const priceRulesResponse = await shopifyAPI('price_rules.json?limit=250');
+    
+    const loyaltyRules = priceRulesResponse.data.price_rules.filter(rule => 
+      rule.title && rule.title.includes('Loyalty Points Redemption')
+    );
+
+    let totalCodes = 0;
+    let usedCodes = 0;
+    let totalDiscountValue = 0;
+    let expiredCodes = 0;
+
+    const now = new Date();
+
+    for (const rule of loyaltyRules) {
+      try {
+        const codesResponse = await shopifyAPI(`price_rules/${rule.id}/discount_codes.json`);
+        
+        for (const code of codesResponse.data.discount_codes) {
+          totalCodes++;
+          
+          if (code.usage_count > 0) {
+            usedCodes++;
+            totalDiscountValue += Math.abs(parseFloat(rule.value)) * code.usage_count;
+          }
+          
+          if (new Date(rule.ends_at) < now) {
+            expiredCodes++;
+          }
+        }
+      } catch (err) {
+        console.warn(`[LOYALTY] Error fetching codes for rule ${rule.id}:`, err.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      statistics: {
+        total_codes_created: totalCodes,
+        codes_used: usedCodes,
+        codes_unused: totalCodes - usedCodes,
+        codes_expired: expiredCodes,
+        total_discount_value: totalDiscountValue,
+        usage_rate: totalCodes > 0 ? ((usedCodes / totalCodes) * 100).toFixed(1) : '0.0',
+        loyalty_price_rules: loyaltyRules.length
+      },
+      generated_at: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[LOYALTY] Error fetching discount statistics:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch discount statistics',
+      message: error.message
+    });
+  }
+});
+
+// Clean up expired discount codes (maintenance endpoint)
+router.post('/cleanup-expired-discounts', async (req, res) => {
+  try {
+    console.log('[LOYALTY] Cleaning up expired discount codes...');
+
+    const priceRulesResponse = await shopifyAPI('price_rules.json?limit=250');
+    
+    const loyaltyRules = priceRulesResponse.data.price_rules.filter(rule => 
+      rule.title && rule.title.includes('Loyalty Points Redemption')
+    );
+
+    const now = new Date();
+    let deletedRules = 0;
+    let errors = 0;
+
+    for (const rule of loyaltyRules) {
+      try {
+        const expiresAt = new Date(rule.ends_at);
+        const isExpired = now > expiresAt;
+        
+        // Delete price rules that expired more than 7 days ago
+        const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        
+        if (isExpired && expiresAt < sevenDaysAgo) {
+          await shopifyAPI(`price_rules/${rule.id}.json`, 'DELETE');
+          deletedRules++;
+          console.log(`[LOYALTY] Deleted expired price rule: ${rule.id}`);
+        }
+      } catch (err) {
+        console.warn(`[LOYALTY] Error deleting price rule ${rule.id}:`, err.message);
+        errors++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Cleanup completed',
+      deleted_rules: deletedRules,
+      errors: errors,
+      total_loyalty_rules: loyaltyRules.length
+    });
+
+  } catch (error) {
+    console.error('[LOYALTY] Error during cleanup:', error.response?.data || error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup expired discounts',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;

@@ -435,6 +435,236 @@ class PointsService {
     }
   }
 
+  static calculatePointsDiscount(points, conversionRate = 0.01) {
+    // Default: 100 points = $1.00 discount
+    return Math.floor(points / 100) * 1.00;
+  }
+
+  // Redeem points for discount
+  static async redeemPoints(customerId, pointsToRedeem, orderId = null, description = null) {
+    try {
+      // Validate points amount
+      if (!pointsToRedeem || pointsToRedeem <= 0) {
+        throw new Error('Invalid points amount');
+      }
+
+      // Get customer
+      const customerPoints = await CustomerPoints.findOne({ customer_id: customerId });
+      
+      if (!customerPoints) {
+        throw new Error('Customer not found');
+      }
+
+      // Check if customer has enough points
+      if (customerPoints.current_balance < pointsToRedeem) {
+        throw new Error(`Insufficient points. Available: ${customerPoints.current_balance}, Requested: ${pointsToRedeem}`);
+      }
+
+      // Calculate discount amount
+      const discountAmount = this.calculatePointsDiscount(pointsToRedeem);
+
+      // Deduct points
+      customerPoints.current_balance -= pointsToRedeem;
+      customerPoints.total_redeemed += pointsToRedeem;
+      
+      await customerPoints.save();
+
+      // Record redemption transaction
+      await this.recordTransaction({
+        customer_id: customerId,
+        order_id: orderId,
+        transaction_type: 'redeemed',
+        points: pointsToRedeem,
+        description: description || `Redeemed ${pointsToRedeem} points for $${discountAmount.toFixed(2)} discount`,
+        metadata: {
+          discount_amount: discountAmount,
+          redemption_rate: 0.01,
+          order_id: orderId
+        }
+      });
+
+      console.log(`[POINTS] Redeemed ${pointsToRedeem} points for customer ${customerId}, discount: $${discountAmount}`);
+
+      return {
+        success: true,
+        customer_id: customerId,
+        points_redeemed: pointsToRedeem,
+        discount_amount: discountAmount,
+        new_balance: customerPoints.current_balance,
+        tier: customerPoints.tier
+      };
+
+    } catch (error) {
+      console.error('[POINTS] Error redeeming points:', error);
+      throw error;
+    }
+  }
+
+  // Get redemption options for customer
+  static async getRedemptionOptions(customerId) {
+    try {
+      const customerPoints = await CustomerPoints.findOne({ customer_id: customerId });
+      
+      if (!customerPoints || customerPoints.current_balance <= 0) {
+        return {
+          available: false,
+          balance: 0,
+          options: []
+        };
+      }
+
+      const balance = customerPoints.current_balance;
+      const options = [];
+
+      // Generate redemption options (multiples of 100 points)
+      const maxRedemption = Math.floor(balance / 100) * 100;
+      
+      for (let points = 100; points <= maxRedemption && points <= 2000; points += 100) {
+        const discount = this.calculatePointsDiscount(points);
+        options.push({
+          points: points,
+          discount: discount,
+          label: `${points} points = $${discount.toFixed(2)} off`
+        });
+      }
+
+      return {
+        available: options.length > 0,
+        balance: balance,
+        customer_id: customerId,
+        options: options,
+        conversion_rate: ' 100 points = $1.00'
+      };
+
+    } catch (error) {
+      console.error('[POINTS] Error getting redemption options:', error);
+      throw error;
+    }
+  }
+
+  // Validate redemption before processing
+  static async validateRedemption(customerId, pointsToRedeem) {
+    try {
+      const customerPoints = await CustomerPoints.findOne({ customer_id: customerId });
+      
+      if (!customerPoints) {
+        return {
+          valid: false,
+          error: 'Customer not found'
+        };
+      }
+
+      if (pointsToRedeem <= 0) {
+        return {
+          valid: false,
+          error: 'Invalid points amount'
+        };
+      }
+
+      // Must be multiple of 100
+      if (pointsToRedeem % 100 !== 0) {
+        return {
+          valid: false,
+          error: 'Points must be a multiple of 100'
+        };
+      }
+
+      // Minimum 100 points
+      if (pointsToRedeem < 100) {
+        return {
+          valid: false,
+          error: 'Minimum redemption is 100 points'
+        };
+      }
+
+      if (customerPoints.current_balance < pointsToRedeem) {
+        return {
+          valid: false,
+          error: `Insufficient points. You have ${customerPoints.current_balance} points.`
+        };
+      }
+
+      const discountAmount = this.calculatePointsDiscount(pointsToRedeem);
+
+      return {
+        valid: true,
+        customer_id: customerId,
+        points_to_redeem: pointsToRedeem,
+        discount_amount: discountAmount,
+        remaining_balance: customerPoints.current_balance - pointsToRedeem,
+        conversion_rate: '100 points = $1.00'
+      };
+
+    } catch (error) {
+      console.error('[POINTS] Error validating redemption:', error);
+      return {
+        valid: false,
+        error: error.message
+      };
+    }
+  }
+
+  // Get available redemption tiers for coupon system
+  static async getCouponRedemptionOptions(customerId) {
+    try {
+      const customerPoints = await CustomerPoints.findOne({ customer_id: customerId });
+      
+      if (!customerPoints || customerPoints.current_balance < 100) {
+        return {
+          available: false,
+          balance: customerPoints?.current_balance || 0,
+          options: [],
+          message: 'Minimum 100 points required for discount codes'
+        };
+      }
+
+      const balance = customerPoints.current_balance;
+      const options = [];
+
+      // Generate options in increments of 100 points, up to customer's balance
+      const maxRedemption = Math.floor(balance / 100) * 100;
+      
+      // Common redemption amounts
+      const commonAmounts = [100, 200, 300, 500, 1000];
+      
+      for (const points of commonAmounts) {
+        if (points <= maxRedemption) {
+          const discount = this.calculatePointsDiscount(points);
+          options.push({
+            points: points,
+            discount: discount,
+            label: `${points} points = ${discount.toFixed(2)} off`,
+            recommended: points === 200 // Highlight $2 option
+          });
+        }
+      }
+
+      // Add custom max option if it's different from common amounts
+      if (maxRedemption > 1000 && !commonAmounts.includes(maxRedemption)) {
+        const discount = this.calculatePointsDiscount(maxRedemption);
+        options.push({
+          points: maxRedemption,
+          discount: discount,
+          label: `${maxRedemption} points = ${discount.toFixed(2)} off (Max)`,
+          recommended: false
+        });
+      }
+
+      return {
+        available: options.length > 0,
+        balance: balance,
+        customer_id: customerId,
+        options: options,
+        conversion_rate: '100 points = $1.00',
+        instructions: 'Select points to get a discount code for checkout'
+      };
+
+    } catch (error) {
+      console.error('[POINTS] Error getting coupon redemption options:', error);
+      throw error;
+    }
+  }
+
 }
 
 module.exports = PointsService;

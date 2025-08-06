@@ -625,4 +625,334 @@ router.post('/redeem-by-email', requireDatabase, async (req, res) => {
   }
 });
 
+// Enhanced points redemption for coupon system
+// Add these routes to your routes/points.js file
+
+// Complete coupon redemption flow
+router.post('/redeem-for-coupon', requireDatabase, async (req, res) => {
+  try {
+    const { customer_email, points, redemption_source = 'cart' } = req.body;
+    
+    if (!customer_email || !points) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: customer_email, points'
+      });
+    }
+
+    console.log(`[POINTS] Processing coupon redemption: ${points} points for ${customer_email}`);
+
+    // Step 1: Find customer
+    const customer = await CustomerPoints.findOne({ email: customer_email.toLowerCase() });
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found in loyalty system',
+        customer_email
+      });
+    }
+
+    // Step 2: Validate redemption
+    const validation = await PointsService.validateRedemption(customer.customer_id, points);
+    
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: validation.error,
+        customer_balance: customer.current_balance,
+        points_requested: points
+      });
+    }
+
+    // Step 3: Create Shopify discount code
+    const axios = require('axios');
+    const discountResponse = await axios.post(
+      `${process.env.APP_URL}/api/shopify/create-loyalty-discount`,
+      {
+        customer_id: customer.customer_id,
+        customer_email: customer_email,
+        points: points,
+        redemption_source: redemption_source
+      }
+    );
+
+    if (!discountResponse.data.success) {
+      throw new Error('Failed to create discount code: ' + discountResponse.data.error);
+    }
+
+    const discountData = discountResponse.data;
+    console.log(`[POINTS] Discount code created: ${discountData.discount_code}`);
+
+    // Step 4: Deduct points from customer account
+    customer.current_balance -= points;
+    customer.total_redeemed += points;
+    customer.tier = PointsService.calculateTier(customer.total_earned);
+    
+    await customer.save();
+
+    // Step 5: Record transaction
+    await PointsService.recordTransaction({
+      customer_id: customer.customer_id,
+      transaction_type: 'redeemed',
+      points: points,
+      description: `Coupon redemption: ${discountData.discount_code}`,
+      metadata: {
+        discount_code: discountData.discount_code,
+        discount_amount: discountData.discount_amount,
+        price_rule_id: discountData.price_rule_id,
+        redemption_source: redemption_source,
+        expires_at: discountData.expires_at
+      }
+    });
+
+    console.log(`[POINTS] Successfully redeemed ${points} points for ${customer_email}`);
+
+    // Step 6: Return complete response
+    res.json({
+      success: true,
+      message: 'Points redeemed successfully for discount code',
+      redemption: {
+        customer_id: customer.customer_id,
+        customer_email: customer_email,
+        points_redeemed: points,
+        new_balance: customer.current_balance,
+        new_tier: customer.tier,
+        total_redeemed: customer.total_redeemed
+      },
+      discount: {
+        code: discountData.discount_code,
+        amount: discountData.discount_amount,
+        expires_at: discountData.expires_at,
+        instructions: discountData.instructions,
+        minimum_cart_value: discountData.minimum_cart_value
+      },
+      redemption_source: redemption_source,
+      created_at: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error('[POINTS] Error in coupon redemption:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process coupon redemption',
+      message: error.message
+    });
+  }
+});
+
+// Get customer's discount code history
+router.get('/customer/:customerId/discount-codes', requireDatabase, async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { limit = 10, status = 'all' } = req.query;
+    
+    // Get transactions that created discount codes
+    const transactions = await PointsTransaction
+      .find({ 
+        customer_id: customerId,
+        transaction_type: 'redeemed',
+        'metadata.discount_code': { $exists: true }
+      })
+      .sort({ created_at: -1 })
+      .limit(parseInt(limit));
+
+    // Enrich with current status of discount codes
+    const enrichedCodes = await Promise.all(
+      transactions.map(async (transaction) => {
+        const discountCode = transaction.metadata.discount_code;
+        let codeStatus = 'unknown';
+        
+        try {
+          // Check current status via Shopify API
+          const axios = require('axios');
+          const statusResponse = await axios.get(
+            `${process.env.APP_URL}/api/shopify/validate-discount/${discountCode}`
+          );
+          
+          if (statusResponse.data.success) {
+            if (statusResponse.data.is_expired) {
+              codeStatus = 'expired';
+            } else if (statusResponse.data.is_used) {
+              codeStatus = 'used';
+            } else {
+              codeStatus = 'active';
+            }
+          }
+        } catch (err) {
+          console.warn(`[POINTS] Could not validate discount code ${discountCode}:`, err.message);
+        }
+
+        return {
+          transaction_id: transaction._id,
+          discount_code: discountCode,
+          points_redeemed: transaction.points,
+          discount_amount: transaction.metadata.discount_amount,
+          status: codeStatus,
+          created_at: transaction.created_at,
+          expires_at: transaction.metadata.expires_at,
+          redemption_source: transaction.metadata.redemption_source || 'unknown'
+        };
+      })
+    );
+
+    // Filter by status if requested
+    const filteredCodes = status === 'all' 
+      ? enrichedCodes 
+      : enrichedCodes.filter(code => code.status === status);
+
+    res.json({
+      success: true,
+      customer_id: customerId,
+      discount_codes: filteredCodes,
+      count: filteredCodes.length,
+      filter: { limit: parseInt(limit), status }
+    });
+
+  } catch (error) {
+    console.error('[POINTS] Error getting customer discount codes:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get customer discount codes',
+      message: error.message
+    });
+  }
+});
+
+// Get redemption analytics
+router.get('/redemption-analytics', requireDatabase, async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+
+    // Get redemption transactions
+    const redemptions = await PointsTransaction.find({
+      transaction_type: 'redeemed',
+      created_at: { $gte: startDate },
+      'metadata.discount_code': { $exists: true }
+    });
+
+    // Calculate analytics
+    const totalRedemptions = redemptions.length;
+    const totalPointsRedeemed = redemptions.reduce((sum, txn) => sum + txn.points, 0);
+    const totalDiscountValue = redemptions.reduce((sum, txn) => sum + (txn.metadata.discount_amount || 0), 0);
+
+    // Group by redemption source
+    const sourceBreakdown = redemptions.reduce((acc, txn) => {
+      const source = txn.metadata.redemption_source || 'unknown';
+      acc[source] = (acc[source] || 0) + 1;
+      return acc;
+    }, {});
+
+    // Group by day
+    const dailyRedemptions = redemptions.reduce((acc, txn) => {
+      const date = txn.created_at.toISOString().split('T')[0];
+      acc[date] = (acc[date] || 0) + 1;
+      return acc;
+    }, {});
+
+    // Get top customers
+    const customerStats = redemptions.reduce((acc, txn) => {
+      const customerId = txn.customer_id;
+      if (!acc[customerId]) {
+        acc[customerId] = { redemptions: 0, points: 0, discount_value: 0 };
+      }
+      acc[customerId].redemptions++;
+      acc[customerId].points += txn.points;
+      acc[customerId].discount_value += txn.metadata.discount_amount || 0;
+      return acc;
+    }, {});
+
+    const topCustomers = Object.entries(customerStats)
+      .map(([customerId, stats]) => ({ customer_id: customerId, ...stats }))
+      .sort((a, b) => b.points - a.points)
+      .slice(0, 10);
+
+    res.json({
+      success: true,
+      period: {
+        days: parseInt(days),
+        start_date: startDate.toISOString(),
+        end_date: new Date().toISOString()
+      },
+      summary: {
+        total_redemptions: totalRedemptions,
+        total_points_redeemed: totalPointsRedeemed,
+        total_discount_value: totalDiscountValue,
+        average_redemption_size: totalRedemptions > 0 ? Math.round(totalPointsRedeemed / totalRedemptions) : 0,
+        average_discount_value: totalRedemptions > 0 ? (totalDiscountValue / totalRedemptions).toFixed(2) : '0.00'
+      },
+      breakdowns: {
+        by_source: sourceBreakdown,
+        by_day: dailyRedemptions,
+        top_customers: topCustomers
+      }
+    });
+
+  } catch (error) {
+    console.error('[POINTS] Error getting redemption analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get redemption analytics',
+      message: error.message
+    });
+  }
+});
+
+// Bulk redemption validation (for cart widget)
+router.post('/validate-bulk-redemption', requireDatabase, async (req, res) => {
+  try {
+    const { customer_email, point_options } = req.body;
+    
+    if (!customer_email || !Array.isArray(point_options)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: customer_email, point_options (array)'
+      });
+    }
+
+    // Find customer
+    const customer = await CustomerPoints.findOne({ email: customer_email.toLowerCase() });
+    
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found',
+        customer_email
+      });
+    }
+
+    // Validate each option
+    const validatedOptions = await Promise.all(
+      point_options.map(async (points) => {
+        const validation = await PointsService.validateRedemption(customer.customer_id, points);
+        return {
+          points: points,
+          valid: validation.valid,
+          discount_amount: validation.valid ? Math.floor(points / 100) : 0,
+          error: validation.error || null
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      customer_id: customer.customer_id,
+      customer_email: customer_email,
+      current_balance: customer.current_balance,
+      options: validatedOptions.filter(option => option.valid),
+      invalid_options: validatedOptions.filter(option => !option.valid)
+    });
+
+  } catch (error) {
+    console.error('[POINTS] Error validating bulk redemption:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to validate redemption options',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
